@@ -1,0 +1,523 @@
+# SafeRide Development Handoff
+
+## Current Status
+
+SafeRide is now a local full-stack computer vision web app for uploaded-video and live webcam/RTSP helmet violation analysis. The app supports YOLO-based frame analysis, ByteTrack-style rider identity tracking, real video playback with detection overlays, job progress tracking, processing timing telemetry, runtime detection settings, result summaries, evidence persistence, and a cleaner operations-console UI.
+
+The project is still an MVP. The web app and backend workflow are functional, but out-of-domain model accuracy, OCR quality, tracker tuning, and production hardening remain future work.
+
+## Progress Log - 2026-08-26
+
+### Whole-Track Plate Capture
+
+- Replaced early three-sample plate finalization with collection across the motorcycle's visible track, capped at six seconds.
+- Buffers plate crops before helmet confirmation and continues after confirmation even when the helmet detector flickers.
+- Keeps only the five strongest crops per track using detector confidence, crop size, and sharpness.
+- Defers EasyOCR until finalization and processes at most the strongest three crops before character-level voting.
+- Finalizes when the track ends, the collection window expires, or the uploaded/live session stops.
+- Preserved the existing database, API, evidence, and frontend formats.
+- Added config/env knobs: `plate_collection_seconds`, `plate_candidate_limit`, and `plate_ocr_candidate_limit`.
+- Added focused regression tests under `backend/tests/test_plate_collection.py`.
+
+## Progress Log - 2026-06-21
+
+### Accomplished Today
+
+- Performed a broad professional UI/UX polish pass across the frontend.
+- Rebuilt `frontend/app/globals.css` around a smaller design system:
+  - cleaner tokens
+  - restrained neutral palette
+  - consistent panels, cards, buttons, badges, filters, tables, modals, and empty states
+  - tighter operations-console spacing
+  - improved responsive behavior
+- Updated page hierarchy and wording:
+  - `/upload` now presents as the Analysis Console.
+  - `/dashboard` now presents as an Operations Dashboard.
+  - `/violations` now presents as a Review Queue.
+- Improved status/error accessibility with live status and alert semantics where appropriate.
+- Investigated a video playback issue where portrait uploaded footage looked zoomed or badly framed after detection.
+- Confirmed the latest uploaded clip was portrait (`504x900`) while the viewer was using a fixed console-style stage.
+- Fixed the Live tab player so the video/canvas layer sizes from the actual video or detection metadata aspect ratio instead of being forced into one fixed layout.
+- Simplified overlay drawing for the new aspect-aware layer so boxes map directly to the displayed video frame.
+- Confirmed the frontend and backend can run together:
+  - Frontend: `http://localhost:3000`
+  - Backend: `http://127.0.0.1:8000`
+- Restarted the frontend dev server after CSS disappeared locally.
+- Confirmed `http://localhost:3000/upload` returns 200 and the generated Next CSS asset is present and non-empty.
+
+### Challenges Faced And Tracked
+
+- Running `npm run build` while `npm run dev` was active confused the Next dev cache and caused the browser to appear unstyled.
+  - Fixed by stopping the active Node dev-server processes and starting `npm run dev` again.
+  - Development note updated below: avoid running build and dev against the same `.next` directory at the same time.
+- A parallel `npm run typecheck` and `npm run build` run briefly failed because `next build` rewrote `.next/types` while TypeScript was reading it.
+  - Reran `npm run typecheck` by itself and it passed.
+- Windows denied `Get-NetTCPConnection` for port lookup in the current shell.
+  - Used active Node process inspection and targeted `Stop-Process` instead.
+- The video framing bug was caused by frontend layout rather than the backend serving a preview/crop in place of the original video.
+  - `source_video` still points to the uploaded source media.
+  - The fix was scoped to `frontend/components/UploadClient.tsx` and `frontend/app/globals.css`.
+
+## Progress Log - 2026-05-17
+
+### Accomplished Today
+
+- Performed a site-wide frontend visual cleanup focused on typography, visual weight, and dashboard polish.
+- Normalized global font weights in `frontend/app/globals.css` to avoid the previous overuse of bold/semi-bold labels.
+- Softened cards, panels, buttons, chips, tables, and shadows so the UI feels cleaner and more professional.
+- Removed stale dark standalone Violation page CSS that was no longer used after the page was unified into the shared app shell.
+- Verified frontend styling changes with:
+  - `npm run typecheck`
+  - `npm run build`
+  - `GET /dashboard`
+  - `GET /violations`
+- Started both runtime services for testing:
+  - Frontend at `http://127.0.0.1:3000`
+  - Backend at `http://127.0.0.1:8000`
+- Clarified the current Live preview behavior:
+  - The primary UI now plays the uploaded source video with synchronized canvas overlays.
+  - Detection is sampled, so overlay boxes update at sampled-frame cadence rather than every video frame.
+  - The backend MJPEG stream remains available as a legacy/API preview path, but it is not the main browser playback mode and not a true camera/live feed.
+- Enabled EasyOCR-based plate text reading by default.
+- Added OCR preprocessing for plate crops:
+  - upscale
+  - grayscale
+  - bilateral filtering
+  - adaptive threshold variant
+- Downloaded and cached EasyOCR model weights under `.cache/easyocr/`.
+- Added `scripts/backfill_plate_ocr.py` to populate OCR text for existing saved plate crops.
+- Backfilled existing violation records:
+  - attempted 9 saved plate crops
+  - updated 4 records with OCR text
+- Updated plate display wording across Analysis, Dashboard, and Violation Review:
+  - actual OCR text when available
+  - `Unreadable plate` when a crop exists but OCR fails
+  - `Plate not captured` when no crop exists
+- Added click-to-preview for plate crops in Violation Review.
+- Added a focused plate crop modal, separate from the full evidence snapshot modal.
+- Updated `handoff.md` during the session so OCR and plate labeling changes are captured.
+
+### Challenges Faced And Tracked
+
+- The app had site-wide visual inconsistency from many competing font weights, heavy chips, heavy table labels, and old override CSS.
+  - Fixed by normalizing typography and visual primitives in `frontend/app/globals.css`.
+- The Violation page had old dark-mode standalone shell CSS still present even though the current page uses the shared SafeRide shell.
+  - Fixed by removing stale `.violation-system`, rail, topbar, hero, and related media-query styles.
+- The workspace is not currently a Git repository, so changes could not be reviewed with normal `git diff`/status workflows.
+  - Worked around by keeping edits tightly scoped and running checks after each meaningful change.
+- The initial backend startup was fine, but restarting a long-running attached Uvicorn session was noisy because the frontend was polling endpoints continuously.
+  - Fixed by force-stopping the old backend process and starting a fresh Uvicorn session.
+- EasyOCR was installed but its model weights were not cached locally.
+  - First OCR initialization attempted a network download and failed inside the sandbox with a socket permission error.
+  - Fixed by approving the model download into `.cache/easyocr/`.
+- EasyOCR's verbose download progress bar crashed once on Windows console encoding because it printed block characters not supported by the active code page.
+  - Fixed by rerunning initialization with `verbose=False`.
+- Existing saved plate crops varied heavily in quality.
+  - Backfill succeeded on 4 of 9 crops; the rest were too small, blurry, angled, or unreadable.
+- OCR works better on car plates than motorcycle plates in current testing.
+  - Current rough observed accuracy is around 70% overall.
+  - Motorcycle plates remain harder because they are smaller in-frame, blur more, tilt more often, and are frequently occluded.
+- The Live tab now uses browser video playback with canvas detection overlays for uploaded videos.
+  - It is still not true live camera/RTSP input yet.
+- Completed analyses now remain playable in the Live tab instead of immediately switching away to Results.
+- Dashboard job rows include a play action that reopens saved jobs through `/upload?job=<job_id>`.
+- Processing telemetry now includes elapsed time, processing FPS, and ETA.
+- The Analysis Source panel now includes runtime detection settings for confidence thresholds, sample interval, max violations, and OCR.
+
+## Implemented So Far
+
+### Frontend
+
+- Built a Next.js + TypeScript frontend under `frontend/`.
+- Added a main Analysis Console at `/upload`.
+- Added an Operations Dashboard page at `/dashboard`.
+- Added a Review Queue page at `/violations`.
+- Added a shared app shell/navigation component with active route states.
+- Added backend health indicator.
+- Added source/upload panel.
+- Added drag-and-drop upload handling, client-side video validation, and selected-file size feedback.
+- Added live analysis viewer.
+- Reworked the Live tab into actual video playback with synchronized canvas overlays.
+- Added tabs:
+  - `Live`
+  - `Results`
+  - `Evidence`
+- Added telemetry metrics:
+  - progress
+  - current frame
+  - total frames
+  - sampled frames
+  - violation count
+  - elapsed time
+  - processing FPS
+  - ETA
+  - result state
+- Added a runtime Settings panel in the Analysis Source column:
+  - object confidence
+  - helmet confidence
+  - plate confidence
+  - sample interval
+  - max violations per video
+  - OCR on/off
+- Added professional UI styling in `frontend/app/globals.css`.
+- Reworked the global frontend styling into a more consistent operations-console design system.
+- Added responsive behavior for smaller screens.
+- Added Dashboard search and job status filters.
+- Added Violation search, status filters, CSV export, and evidence image inspector.
+- Unified the Violation page back into the shared SafeRide shell and updated the global font stack.
+- Added delete/clear actions for previous jobs and violation records.
+- Removed the Recent Jobs panel from Analysis to reduce clutter.
+- Replaced ambiguous violation statuses with review-oriented labels: pending, confirmed violation, and false positive.
+- Reduced heavy UI font weights that made the app feel overly bold.
+- Added visible plate crop previews in Violation Review and the evidence inspector.
+- Added persisted review decisions for violations: pending, confirmed, and false positive.
+- Added reviewer actions in Violation Review:
+  - Confirm violation
+  - Mark false positive
+- Enabled EasyOCR-based plate text reading for saved plate crops.
+- Updated plate labels so unreadable or uncaptured plates are shown clearly instead of as pending.
+- Added `scripts/backfill_plate_ocr.py` to populate OCR text for existing saved violation crops.
+- Added `/upload?job=<job_id>` support so saved jobs can be reopened for playback from Dashboard.
+- Fixed portrait/non-16:9 playback framing by sizing the Live tab video/canvas layer from the actual media or detection metadata aspect ratio.
+
+### Backend
+
+- Built a FastAPI backend under `backend/`.
+- Added upload endpoint:
+  - `POST /api/videos/upload`
+- Added health endpoint:
+  - `GET /api/health`
+- Added runtime settings endpoints:
+  - `GET /api/settings`
+  - `PATCH /api/settings`
+- Added job endpoints:
+  - `GET /api/jobs`
+  - `GET /api/jobs/{job_id}`
+  - `GET /api/jobs/{job_id}/stream`
+  - `GET /api/jobs/{job_id}/detections`
+- Added violations endpoint:
+  - `GET /api/violations`
+- Added cleanup/review endpoints:
+  - `DELETE /api/jobs`
+  - `DELETE /api/jobs/{job_id}`
+  - `DELETE /api/violations/{violation_id}`
+  - `PATCH /api/violations/{violation_id}/review`
+- Added SQLite persistence in `database/saferide.db`.
+- Added schema migration for expanded job fields:
+  - `progress`
+  - `current_frame`
+  - `total_frames`
+  - `sampled_frames`
+  - `violation_count`
+  - `elapsed_seconds`
+  - `processing_fps`
+  - `eta_seconds`
+  - `preview_image`
+  - `result`
+- Added schema migration for violation review status:
+  - `review_status`
+- Added generated media directories:
+  - `data/uploads/`
+  - `data/previews/`
+  - `data/evidence/`
+  - `data/plates/`
+  - `data/metadata/`
+
+### Computer Vision
+
+- Downloaded baseline models into `models/`:
+  - `yolo11s.pt`
+  - `helmet-yolov8n.pt`
+  - `license-plate-yolo11n.pt`
+- Implemented YOLO inference in `backend/app/services/pipeline.py`.
+- Current detection classes:
+  - COCO `person`
+  - COCO `motorcycle`
+  - helmet model `With Helmet`
+  - helmet model `Without Helmet`
+  - plate model `License_Plate`
+- Added OpenCV annotation for:
+  - person
+  - motorcycle
+  - helmet
+  - no helmet
+  - license plate
+- Added violation evidence capture when `Without Helmet` is detected.
+- Added license plate crop saving when plate detection is available.
+- Added EasyOCR plate text reading for detected plate crops. OCR model weights are cached under `.cache/easyocr/`.
+- Added MJPEG live stream support with an in-memory frame buffer in `backend/app/services/streaming.py`.
+- Pinned YOLO inference image sizes to 960 for object, helmet, and plate models. The helmet model missed obvious no-helmet riders when Ultralytics used the weight file's implicit default size.
+- Replaced the old global helmet-to-plate heuristic with per-rider association scoring:
+  - person to motorcycle
+  - helmet/no-helmet to person upper body
+  - plate to motorcycle lower region
+- Added ByteTrack-style rider association tracking during each video job so repeated no-helmet detections are suppressed by stable rider track IDs instead of by a single global cooldown.
+- Added association guide lines to annotated frames for no-helmet riders so reviewer/debugging evidence shows which helmet, motorcycle, and plate were linked.
+- Added `track_id` to sampled detection metadata, evidence annotations, saved violation records, the violation detail modal, and CSV exports.
+- Added bounded whole-track plate collection per motorcycle:
+  - crops are buffered before and after no-helmet confirmation
+  - cheap quality scoring retains only the strongest five candidates
+  - OCR runs on at most the best three when the track finalizes
+  - saved records use the best crop and character-voted OCR result
+- Hardened rider association against common false matches:
+  - no-helmet violations now require a plausible motorcycle association before saving
+  - weak no-helmet associations are rejected by a minimum association score
+  - plate-to-motorcycle matching now uses hard spatial plausibility gates before scoring
+  - COCO car, bus, and truck detections are used as negative vehicle context so car/truck/bus plates are less likely to attach to motorcycle riders
+  - the risky plate-to-helmet fallback is no longer used for saved no-helmet rider associations
+- Added sampled-frame detection metadata for video overlays:
+  - source video URLs are returned as `source_video`
+  - metadata is written under `data/metadata/`
+  - the frontend overlays boxes and association lines on top of `<video>`
+- Added runtime tuning for detection thresholds used by subsequent analyses:
+  - `object_confidence`
+  - `helmet_confidence`
+  - `plate_confidence`
+  - `sample_every_seconds`
+  - `max_violations_per_video`
+  - `enable_ocr`
+- Added association tuning settings:
+  - `min_helmet_person_score`
+  - `min_person_motorcycle_score`
+  - `min_helmet_motorcycle_score`
+  - `min_no_helmet_association_score`
+  - `min_plate_motorcycle_score`
+
+## Current Architecture
+
+```text
+Next.js frontend
+    |
+    | REST + video media + detection metadata
+    v
+FastAPI backend
+    |
+    | Background video processing
+    v
+YOLO pipeline
+    |
+    | writes records/media
+    v
+SQLite + local filesystem
+```
+
+Main runtime flow:
+
+```text
+Upload video
+    -> Create job
+    -> Background processor samples detection frames and writes overlay metadata
+    -> YOLO detects motorcycle/person/helmet/plate
+    -> Uploaded video is played by the browser while canvas overlays metadata
+    -> Latest preview is saved to data/previews
+    -> Violations are saved to database and data/evidence
+    -> Plate crops are saved to data/plates
+    -> UI shows Live / Results / Evidence
+    -> Processing telemetry shows elapsed time, FPS, and ETA
+    -> Runtime settings can tune subsequent analyses
+    -> Violation Review supports reviewer decisions and plate crop inspection
+```
+
+## Important Files
+
+- `frontend/components/AppShell.tsx`
+  - Shared navigation/sidebar shell.
+- `frontend/components/UploadClient.tsx`
+  - Main analysis console UI, video playback, canvas detection overlay, telemetry, and runtime settings panel.
+- `frontend/components/DashboardClient.tsx`
+  - Review/history/evidence UI.
+- `frontend/components/ViolationsClient.tsx`
+  - Violation review table, plate crops, evidence inspector, CSV export, and review decisions.
+- `frontend/lib/api.ts`
+  - Frontend API client and shared types, including detection settings requests.
+- `frontend/app/globals.css`
+  - Main UI styling.
+- `backend/app/api/routes.py`
+  - FastAPI routes, including settings, job, detection metadata, and review endpoints.
+- `backend/app/services/pipeline.py`
+  - YOLO video processing pipeline, rider association, tracker integration, and sampled-frame metadata writer.
+- `backend/app/services/byte_tracker.py`
+  - Local ByteTrack-style tracker for sampled rider association boxes.
+- `backend/app/services/streaming.py`
+  - MJPEG frame hub.
+- `backend/app/services/repository.py`
+  - SQLite access helpers.
+- `backend/app/core/database.py`
+  - SQLite schema and migrations.
+- `backend/app/core/config.py`
+  - Paths and detection settings.
+- `scripts/backfill_plate_ocr.py`
+  - Utility script for running OCR against existing saved plate crops and updating stored violation records.
+- `models/README.md`
+  - Model notes.
+
+## How To Run
+
+Backend:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+Frontend:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:3000/upload
+```
+
+API docs:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+## Development Notes
+
+- Prefer running the backend without `--reload` during inference. Reload mode can behave poorly when generated media files are changing.
+- If using reload, restrict it to the backend directory:
+
+```powershell
+python -m uvicorn app.main:app --reload --reload-dir backend --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+- Do not run `npm run build` while `npm run dev` is active. On Windows this has corrupted the Next `.next` dev cache before.
+- If Next localhost starts crashing with missing chunk/module errors, stop the dev server and remove `frontend/.next`.
+- Runtime settings are in-memory only. They reset to `.env`/defaults when the backend restarts unless persistence is added later.
+- `.pt` model files, generated media, database files, venv, cache, and `node_modules` are ignored by git.
+
+## Current Limitations
+
+- Detection is sampled, not every frame. Controlled by `sample_every_seconds` in `backend/app/core/config.py`.
+- Live preview plays the original uploaded video and overlays the nearest sampled detection metadata, so boxes update at sampled-frame cadence rather than every video frame.
+- Uploaded videos can be portrait or landscape; the Live tab now adapts its playback/overlay layer to the source aspect ratio.
+- Larger inference sizes improve small rider recall but cost more processing time. Controlled by `object_imgsz`, `helmet_imgsz`, and `plate_imgsz`.
+- Runtime settings apply to subsequent analyses, not jobs that are already running.
+- Runtime settings are not persisted across backend restarts yet.
+- OCR is enabled by default, but plate text can still be missing when the crop is too small, blurry, angled, or partially occluded.
+- Helmet detection accuracy depends heavily on the public baseline model.
+- Rider-to-motorcycle-to-plate association now exists, but it is still geometry based and should be tuned against labeled real traffic clips.
+- Plate selection now searches the full visible motorcycle track for up to six seconds and OCR-reads only the strongest candidates, but plates that remain small, blurred, occluded, or badly angled can still be unreadable.
+- Duplicate suppression now uses ByteTrack-style rider identities within each job, but tracker thresholds still need tuning against real traffic clips.
+- No authentication or role-based access.
+- CSV export exists for violations. No PDF/report generator yet.
+- No formal evaluation dataset or metrics dashboard yet.
+
+## Areas To Improve
+
+### Accuracy
+
+- Test on real Thai motorcycle traffic videos.
+- Tune thresholds with the Analysis Settings panel:
+  - `object_confidence`
+  - `helmet_confidence`
+  - `plate_confidence`
+- Build a local helmet/no-helmet dataset from Thai motorcycle footage.
+- Fine-tune `models/helmet-yolov8n.pt` on local examples using YOLO-format labels:
+  - class `0`: `With Helmet`
+  - class `1`: `Without Helmet`
+- Suggested dataset target:
+  - 300-800 labeled frames to start
+  - 70% train, 20% validation, 10% test
+  - include side/back views, small/far riders, passengers, blur, night, occlusion, and dense traffic
+- Tune rider/motorcycle association and ByteTrack thresholds on real clips.
+- Continue reducing duplicate violation records for dense, occluded traffic.
+- Evaluate the current helmet model on Thai traffic footage.
+- Fine-tune helmet and plate models on Thailand-specific data.
+
+### OCR
+
+- Improve EasyOCR accuracy for motorcycle plate crops.
+- Consider PaddleOCR or a plate-specialized OCR model as an alternative baseline.
+- Evaluate the six-second collection window and top-candidate limits against labeled clips.
+- Add perspective/angle quality to the existing size, sharpness, and detector-confidence crop ranking.
+- Add Thai plate post-processing.
+- Save OCR confidence and raw text.
+- Compare local OCR against an API baseline if needed.
+
+### Performance
+
+- Install CUDA-enabled PyTorch for RTX 4070 Super acceleration.
+- Add frame resizing options.
+- Consider a proper task queue if jobs become long-running.
+- Avoid loading all models in every process if multiple backend workers are used.
+
+### UX
+
+- Add clear empty states for old jobs with no preview.
+- Persist settings or add named tuning presets.
+- Add PDF export/report generation for school demo/reporting.
+- Consider a dedicated settings page for thresholds, review policy, and OCR.
+
+### Inputs
+
+- Add webcam mode.
+- Add RTSP/CCTV stream mode.
+- Add image upload mode.
+- Add batch video processing.
+
+### Reporting
+
+- Add metrics page:
+  - total jobs
+  - total violations
+  - average FPS
+  - no-helmet confidence distribution
+  - plate detection rate
+- Add project evaluation notebook or script.
+- Add confusion matrix support once labeled data exists.
+
+## Suggested Next Session Plan
+
+1. Add timeline markers and refine jump-to-violation controls for completed video playback.
+2. Add a script or debug mode to export sampled frames and rider/helmet crops from uploaded videos into a local dataset folder.
+3. Label a first Thai motorcycle helmet dataset in YOLO format with `With Helmet` and `Without Helmet`.
+4. Fine-tune the helmet model from `models/helmet-yolov8n.pt` and compare validation metrics against the current baseline.
+5. Tune runtime thresholds against 3-5 sample Thailand traffic clips using the Settings panel.
+6. Improve motorcycle plate OCR with Thai plate post-processing and better crop scoring.
+7. Add PDF/report export for school presentation/reporting.
+8. Plan RTSP/CCTV support as a new live-stream pipeline rather than an extension of the current upload-only job flow.
+
+## Known Good Checks
+
+These checks passed during this session:
+
+```powershell
+npm run typecheck
+npm run build
+.\.venv\Scripts\python.exe -m compileall backend\app
+.\.venv\Scripts\python.exe -m compileall scripts\backfill_plate_ocr.py
+.\.venv\Scripts\python.exe -m pip check
+```
+
+Also verified:
+
+- `http://localhost:3000/upload` returns 200.
+- `http://localhost:3000/dashboard` returns 200.
+- `http://localhost:3000/violations` returns 200.
+- `http://127.0.0.1:8000/api/health` returns `ok`.
+- `GET /api/jobs/{job_id}/stream` returns `multipart/x-mixed-replace`.
+- `GET /api/settings` returns current runtime detection settings.
+- `PATCH /api/settings` accepts bounded runtime detection settings.
+- `PATCH /api/violations/{violation_id}/review` persists `review_status`.
+- Next CSS asset for `/upload` loads successfully after a clean dev-server restart.
+
+## Current Runtime Ports
+
+- Frontend: `http://localhost:3000`
+- Backend: `http://127.0.0.1:8000`
+
+## Model Sources
+
+- Ultralytics YOLO11: `models/yolo11s.pt`
+- Helmet model: Hugging Face `iam-tsr/yolov8n-helmet-detection`
+- License plate model: Hugging Face `morsetechlab/yolov11-license-plate-detection`
+
+Use these in citations for the school report.
